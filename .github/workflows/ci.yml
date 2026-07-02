@@ -1,0 +1,37 @@
+# Tetikleyici (caller) workflow.
+# PR'da sadece test + güvenlik gate'leri çalışır.
+# main'e push'ta ek olarak build + imzala + SBOM + provenance + GHCR push çalışır.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Varsayılan en az yetki.
+permissions:
+  contents: read
+
+# Aynı ref için eski koşuları iptal et.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    uses: ./.github/workflows/_ci-reusable.yml
+    # Reusable workflow'un ihtiyaç duyduğu yetkiler caller'dan devredilir.
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      security-events: write
+      attestations: write
+      pull-requests: write
+    # GITOPS_PAT dahil, aynı repo içindeki reusable workflow'a secret'ları aktarır
+    # (yerel path referansı için secret mapping yerine en basit yol).
+    secrets: inherit
+    with:
+      java-version: "17"
+      # Yalnızca main'e push'ta yayınla; PR'larda sadece gate'ler koşar.
+      publish: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}

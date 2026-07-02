@@ -1,6 +1,7 @@
 plugins {
   id 'java'
   id 'checkstyle'
+  id 'jacoco'
   id 'org.springframework.boot' version '4.1.0'
   id 'io.spring.dependency-management' version '1.1.7'
   id 'org.graalvm.buildtools.native' version '1.1.2'
@@ -60,6 +61,33 @@ dependencies {
 
 tasks.named('test') {
   useJUnitPlatform()
+  finalizedBy tasks.named('jacocoTestReport')
+}
+
+tasks.named('jacocoTestReport') {
+  dependsOn tasks.named('test')
+  reports {
+    xml.required = true
+    html.required = true
+  }
+}
+
+// CI gate: kapsam bu eşiğin altına düşerse build fail eder.
+// Mevcut kapsam ~89% instruction; eşik gürültü payı bırakacak şekilde altına alındı.
+tasks.named('jacocoTestCoverageVerification') {
+  dependsOn tasks.named('jacocoTestReport')
+  violationRules {
+    rule {
+      limit {
+        counter = 'INSTRUCTION'
+        minimum = 0.75
+      }
+    }
+  }
+}
+
+tasks.named('check') {
+  dependsOn tasks.named('jacocoTestCoverageVerification')
 }
 
 tasks.named("cyclonedxDirectBom").configure {
