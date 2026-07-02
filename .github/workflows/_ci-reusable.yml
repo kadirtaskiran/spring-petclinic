@@ -166,11 +166,13 @@ jobs:
         run: |
           TAG="sha-${GITHUB_SHA::12}"
           # NOT: Kilitli ortamda Paketo builder imajı kendi mirror'ından çekilmeli.
-          # BP_NATIVE_IMAGE=false: build.gradle'daki org.graalvm.buildtools.native
-          # plugin'i Spring Boot Gradle plugin'ine bootBuildImage'ı native-image
-          # moduna (GraalVM NIK) geçirtiyor; biz sade JVM buildpacks imajı istiyoruz.
+          # build.gradle'daki org.graalvm.buildtools.native plugin'i, Spring Boot
+          # Gradle plugin'inin bootBuildImage varsayılan builder/run image seçimini
+          # jammy-tiny + native-image buildpack'ine kaydırıyor (BP_NATIVE_IMAGE env
+          # değişkeni bunu etkilemiyor — builder seçiminin kendisi değişiyor). Sade
+          # JVM buildpacks imajı için builder'ı elle jammy-base'e sabitliyoruz.
           ./gradlew --no-daemon bootBuildImage -x test --imageName="${IMAGE}:${TAG}" \
-            --environment BP_NATIVE_IMAGE=false
+            --builder=paketobuildpacks/builder-jammy-base:latest
           docker push "${IMAGE}:${TAG}"
 
       - name: Digest'i yakala
