@@ -166,7 +166,11 @@ jobs:
         run: |
           TAG="sha-${GITHUB_SHA::12}"
           # NOT: Kilitli ortamda Paketo builder imajı kendi mirror'ından çekilmeli.
-          ./gradlew --no-daemon bootBuildImage -x test --imageName="${IMAGE}:${TAG}"
+          # BP_NATIVE_IMAGE=false: build.gradle'daki org.graalvm.buildtools.native
+          # plugin'i Spring Boot Gradle plugin'ine bootBuildImage'ı native-image
+          # moduna (GraalVM NIK) geçirtiyor; biz sade JVM buildpacks imajı istiyoruz.
+          ./gradlew --no-daemon bootBuildImage -x test --imageName="${IMAGE}:${TAG}" \
+            --environment BP_NATIVE_IMAGE=false
           docker push "${IMAGE}:${TAG}"
 
       - name: Digest'i yakala
