@@ -27,6 +27,7 @@ jobs:
       id-token: write
       security-events: write
       attestations: write
+      pull-requests: write
     # GITOPS_PAT dahil, aynı repo içindeki reusable workflow'a secret'ları aktarır
     # (yerel path referansı için secret mapping yerine en basit yol).
     secrets: inherit

@@ -37,6 +37,7 @@ jobs:
     permissions:
       contents: read
       security-events: write   # SARIF upload (trivy/semgrep)
+      pull-requests: write     # gitleaks-action v3: PR'a bulgu yorumu için
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -45,6 +46,8 @@ jobs:
 
       - name: Gizli sızıntı taraması (gitleaks)
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: JDK kurulumu
         uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0
