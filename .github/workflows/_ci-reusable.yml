@@ -1,0 +1,277 @@
+# Yeniden kullanılabilir CI (Faz 2 + Faz 3)
+# Gradle öncelikli: test -> güvenlik gate -> buildpacks build (bootBuildImage) ->
+# cosign imza + SBOM + provenance -> GHCR'ye digest push
+#
+# NOT: Tüm 3. parti action'lar tam COMMIT SHA'sına pinli (zero-trust: tag
+# taşınabilir, SHA taşınamaz). Versiyon güncellemesi Dependabot ile takip edilir
+# (bkz. .github/dependabot.yml) — sürüm numarası yanındaki yorumdan okunur.
+name: reusable-ci
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: "GHCR imaj adı. Boşsa ghcr.io/<owner>/<repo> kullanılır."
+        type: string
+        required: false
+        default: ""
+      java-version:
+        type: string
+        required: false
+        default: "17"
+      publish:
+        description: "true ise imaj build edilir, imzalanır ve GHCR'ye push edilir."
+        type: boolean
+        required: false
+        default: false
+
+# Varsayılan en az yetki. Her job kendi ihtiyacını açıkça ekler.
+permissions:
+  contents: read
+
+jobs:
+  # ── Faz 2: test + kalite/güvenlik gate'leri ────────────────────────────────
+  quality:
+    name: Test + kalite/güvenlik gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # SARIF upload (trivy/semgrep)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Gizli sızıntı taraması (gitleaks)
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+
+      - name: JDK kurulumu
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+
+      - name: Gradle kurulumu (wrapper doğrulama + dependency cache)
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+
+      - name: Test + kalite + coverage gate (unit + Testcontainers integration + checkstyle + jacoco)
+        run: ./gradlew --no-daemon check
+        # NOT: check -> jacocoTestCoverageVerification -> instruction coverage
+        # %75 altına düşerse fail eder (bkz. build.gradle). Eşik mevcut ~%89
+        # kapsamın altına gürültü payı bırakacak şekilde ayarlandı.
+
+      - name: Test + coverage raporu (artefakt)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-report
+          path: |
+            build/reports/tests/test/
+            build/reports/jacoco/test/
+          if-no-files-found: ignore
+
+      - name: SCA — bağımlılık taraması (Trivy fs)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          format: sarif
+          output: trivy-fs.sarif
+
+      - name: Trivy fs SARIF yükle
+        if: always()
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+      - name: SAST — Semgrep
+        run: |
+          python -m pip install --quiet semgrep
+          semgrep scan \
+            --config p/java --config p/security-audit --config p/secrets \
+            --error --sarif --output semgrep.sarif
+
+      - name: Semgrep SARIF yükle
+        if: always()
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+  # ── Faz 2: CodeQL (compiled dil için ayrı job) ─────────────────────────────
+  codeql:
+    name: SAST — CodeQL (Java)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+      - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+      - name: CodeQL init
+        uses: github/codeql-action/init@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
+        with:
+          languages: java
+      - name: Derle (autobuild)
+        uses: github/codeql-action/autobuild@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
+      - name: CodeQL analiz
+        uses: github/codeql-action/analyze@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
+        with:
+          category: "/language:java"
+
+  # ── Faz 3: imaj üret ve GHCR'ye digest ile push ────────────────────────────
+  build:
+    name: Build + GHCR digest push
+    needs: [quality, codeql]
+    if: ${{ inputs.publish }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.digest.outputs.image }}
+      digest: ${{ steps.digest.outputs.digest }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+      - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+
+      - name: İmaj adını belirle (GHCR küçük harf ister)
+        id: name
+        run: |
+          IMG="${{ inputs.image-name }}"
+          if [ -z "$IMG" ]; then IMG="ghcr.io/${{ github.repository }}"; fi
+          echo "image=${IMG,,}" >> "$GITHUB_OUTPUT"
+
+      - name: GHCR login
+        run: echo "${{ github.token }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Buildpacks ile imaj üret (Dockerfile yok)
+        env:
+          IMAGE: ${{ steps.name.outputs.image }}
+        run: |
+          TAG="sha-${GITHUB_SHA::12}"
+          # NOT: Kilitli ortamda Paketo builder imajı kendi mirror'ından çekilmeli.
+          ./gradlew --no-daemon bootBuildImage -x test --imageName="${IMAGE}:${TAG}"
+          docker push "${IMAGE}:${TAG}"
+
+      - name: Digest'i yakala
+        id: digest
+        env:
+          IMAGE: ${{ steps.name.outputs.image }}
+        run: |
+          TAG="sha-${GITHUB_SHA::12}"
+          DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE}:${TAG}" | cut -d@ -f2)"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Yayınlanan imaj: ${IMAGE}@${DIGEST}"
+
+  # ── Faz 3: tara + imzala + attest (tedarik zinciri) ────────────────────────
+  supply-chain:
+    name: Scan + imzala + attest
+    needs: build
+    if: ${{ inputs.publish }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write        # cosign keyless + Sigstore OIDC
+      attestations: write    # actions/attest-build-provenance
+    env:
+      IMAGE_REF: ${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}
+    steps:
+      - name: GHCR login
+        run: echo "${{ github.token }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: İmaj taraması (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_REF }}
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: cosign kurulumu
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: İmzala (keyless — Fulcio/Rekor)
+        run: cosign sign --yes "${IMAGE_REF}"
+
+      - name: SBOM üret (Syft, SPDX)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.IMAGE_REF }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: SBOM'u imaja attest et
+        run: cosign attest --yes --type spdxjson --predicate sbom.spdx.json "${IMAGE_REF}"
+
+      - name: SLSA provenance attestation
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ${{ needs.build.outputs.image }}
+          subject-digest: ${{ needs.build.outputs.digest }}
+          push-to-registry: true
+
+  # ── Faz 4: GitOps devri (güven sınırı) — CI burada durur, cluster'a ASLA dokunmaz ──
+  gitops-sync:
+    name: Digest'i GitOps repo'ya yaz
+    needs: [build, supply-chain]
+    if: ${{ inputs.publish }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # gitsign keyless commit imzası (Fulcio/Rekor) — cosign ile aynı OIDC akışı
+    env:
+      GITOPS_REPO: kadirtaskiran/spring-petclinic-gitops-artifacts
+      GITOPS_VALUES_PATH: envs/staging/petclinic-values.yaml
+      IMAGE: ${{ needs.build.outputs.image }}
+      DIGEST: ${{ needs.build.outputs.digest }}
+    steps:
+      - name: GitOps repo'yu checkout et (fine-grained PAT — sadece bu repo'ya contents:write)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_PAT }}
+          path: gitops
+          persist-credentials: true
+
+      - name: gitsign kurulumu (keyless commit imzası, sha256 doğrulamalı indirme)
+        run: |
+          curl -sSLO https://github.com/sigstore/gitsign/releases/download/v0.16.1/gitsign_0.16.1_linux_amd64
+          echo "4a29a1f4b9add1f0f6d9a3e9e6ba0cffa121b971be82d62bb1496d7d1d877b0a  gitsign_0.16.1_linux_amd64" | sha256sum -c -
+          chmod +x gitsign_0.16.1_linux_amd64
+          sudo mv gitsign_0.16.1_linux_amd64 /usr/local/bin/gitsign
+
+      - name: Digest'i ortam değerine yaz
+        working-directory: gitops
+        run: |
+          yq -i '.image.repository = strenv(IMAGE) | .image.digest = strenv(DIGEST)' "${GITOPS_VALUES_PATH}"
+
+      - name: İmzalı commit + push (gitsign — keyless, Fulcio/Rekor)
+        working-directory: gitops
+        run: |
+          if git diff --quiet -- "${GITOPS_VALUES_PATH}"; then
+            echo "Değişiklik yok, commit atlanıyor."
+            exit 0
+          fi
+          git config user.name "petclinic-ci-bot"
+          git config user.email "petclinic-ci-bot@users.noreply.github.com"
+          git config gpg.format x509
+          git config gpg.x509.program gitsign
+          git config commit.gpgsign true
+          git add "${GITOPS_VALUES_PATH}"
+          git commit -m "petclinic: ${DIGEST}"
+          git push origin HEAD:main

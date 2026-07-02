@@ -1,0 +1,4 @@
+# Zero-trust: cluster manifestleri ve CI/CD tanımları için zorunlu review.
+# Org ortamında @kadirtaskiran yerine platform/security ekip handle'ı kullanılmalı.
+/k8s/       @kadirtaskiran
+/.github/   @kadirtaskiran
