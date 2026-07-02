@@ -4,13 +4,10 @@ plugins {
   id 'jacoco'
   id 'org.springframework.boot' version '4.1.0'
   id 'io.spring.dependency-management' version '1.1.7'
-  id 'org.graalvm.buildtools.native' version '1.1.2'
   id 'org.cyclonedx.bom' version '3.2.4'
   id 'io.spring.javaformat' version '0.0.47'
   id "io.spring.nohttp" version "0.0.11"
 }
-
-gradle.startParameter.excludedTaskNames += [ "checkFormatAot", "checkFormatAotTest" ]
 
 group = 'org.springframework.samples'
 version = '4.0.0-SNAPSHOT'
@@ -110,12 +107,3 @@ tasks.named("formatMain").configure { dependsOn("checkstyleNohttp") }
 
 tasks.named("formatTest").configure { dependsOn("checkstyleTest") }
 tasks.named("formatTest").configure { dependsOn("checkstyleNohttp") }
-
-checkstyleAot.enabled = false
-checkstyleAotTest.enabled = false
-
-checkFormatAot.enabled = false
-checkFormatAotTest.enabled = false
-
-formatAot.enabled = false
-formatAotTest.enabled = false
