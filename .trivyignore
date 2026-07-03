@@ -1,0 +1,13 @@
+# Faz 3 image scan suppression list. Her satır incelenip doğrulanmadan eklenmemeli.
+#
+# CVE-2025-48734 (commons-beanutils, HIGH) — FALSE POSITIVE.
+# İmajın tüm dosya sistemi (tüm layer'lar + jar içerikleri) indirilip arandı:
+# commons-beanutils ne bir jar, ne bir class, ne de bir pom.properties olarak
+# imajda mevcut değil. Trivy Java DB'sinin yanlış eşleşmesi.
+CVE-2025-48734
+
+# CVE-2025-67030 (org.codehaus.plexus:plexus-utils, HIGH) — FALSE POSITIVE.
+# Aynı incelemede tek eşleşme, jakarta.transaction-api-2.0.1.jar'ın
+# MANIFEST.MF'indeki "Archiver-Version: Plexus Archiver" build-tool etiketi
+# (Maven paketleme aracı adı) — plexus-utils kütüphanesiyle ilgisi yok.
+CVE-2025-67030
